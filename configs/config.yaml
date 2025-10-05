@@ -1,0 +1,56 @@
+kafka:
+  bootstrap_servers: '${KAFKA_BOOTSTRAP:-localhost:9092}'
+  topic_posts: 'reddit_posts'
+  starting_offsets: 'latest'
+
+minio:
+  bucket: 'datalake'
+
+sink:
+  bronze_prefix: 'bronze/reddit_posts'
+  silver_prefix: 'silver/reddit_posts'
+  gold_prefix: 'gold/reddit_posts'
+  bronze_table: 'bronze_reddit_posts'
+  silver_table: 'silver_reddit_posts'
+  gold_table: 'gold_reddit_posts'
+
+spark:
+  master: 'local[*]'
+  shuffle_partitions: 4
+  extra_conf:
+    spark.jars.packages: 'io.delta:delta-spark_2.12:3.2.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.767'
+    spark.sql.extensions: 'io.delta.sql.DeltaSparkSessionExtension'
+    spark.sql.catalog.spark_catalog: 'org.apache.spark.sql.delta.catalog.DeltaCatalog'
+    spark.hadoop.fs.s3a.endpoint: 'http://localhost:9000'
+    spark.hadoop.fs.s3a.access.key: 'minio'
+    spark.hadoop.fs.s3a.secret.key: 'minio123'
+    spark.hadoop.fs.s3a.path.style.access: 'true'
+    spark.hadoop.fs.s3a.connection.ssl.enabled: 'false'
+    spark.hadoop.fs.s3a.impl: 'org.apache.hadoop.fs.s3a.S3AFileSystem'
+    spark.delta.logStore.class: 'org.apache.spark.sql.delta.storage.S3SingleDriverLogStore'
+
+app:
+  name: 'reddit-pipeline'
+  mode: '${APP_MODE:-bronze}'
+  checkpoint_base: 's3a://datalake/_checkpoints'
+
+reddit:
+  client_id: '${REDDIT_CLIENT_ID}'
+  client_secret: '${REDDIT_CLIENT_SECRET}'
+  user_agent: '${REDDIT_USER_AGENT:-stress-stream/0.1}'
+  subreddits: ['stress', 'depression']
+  query: 'stress'
+  poll_interval: 10
+
+model:
+  # embedding
+  embedding_model: 'sentence-transformers/all-MiniLM-L6-v2'
+  batch_size: 32
+  feature_version: 'v1'
+
+  # classification
+  classification_model: 'distilbert-base-uncased-finetuned-sst-2-english'
+  classifier_label_index: 1
+  classifier_batch_size: 32
+  classifier_threshold: 0.6
+  model_version: 'sst2-v1'
