@@ -1,10 +1,8 @@
 from delta.tables import DeltaTable
 from pyspark.sql import SparkSession, DataFrame, functions as F
 
-from src.common.logging_utils import get_logger
+from loguru import logger
 from src.common.config import Config
-
-log = get_logger(__name__)
 
 # Target Silver schema (ensures stable MERGE columns)
 SILVER_COLS = [
@@ -35,7 +33,7 @@ def _init_silver_if_needed(
             .mode("overwrite")
             .save(silver_path)
         )
-        log.info(f"[SILVER] Initialized empty Delta table at {silver_path}")
+        logger.info(f"[SILVER] Initialized empty Delta table at {silver_path}")
 
 
 def _clean_bronze(batch_df: DataFrame) -> DataFrame:
@@ -57,7 +55,7 @@ def _upsert_silver(batch_df: DataFrame, batch_id: int, cfg: Config) -> None:
     silver_path = f"s3a://{cfg.minio.bucket}/{cfg.sink.silver_prefix}"
 
     n_in = batch_df.count()
-    log.info(f"[SILVER] batch_id={batch_id} | input_rows={n_in}")
+    logger.info(f"[SILVER] batch_id={batch_id} | input_rows={n_in}")
     if n_in == 0:
         return
 
@@ -93,18 +91,18 @@ def _upsert_silver(batch_df: DataFrame, batch_id: int, cfg: Config) -> None:
         WHEN NOT MATCHED THEN INSERT *
     """
     )
-    log.info(f"[SILVER] ✅ Upserted batch_id={batch_id} into {silver_path}")
+    logger.info(f"[SILVER] ✅ Upserted batch_id={batch_id} into {silver_path}")
 
 
 def stream_silver(spark: SparkSession, cfg: Config) -> None:
     """Main entry for Silver stream: read Bronze, clean/dedup, MERGE to Silver."""
-    log.info("🚀 Starting Silver streaming job…")
+    logger.info("🚀 Starting Silver streaming job…")
 
     bronze_path = f"s3a://{cfg.minio.bucket}/{cfg.sink.bronze_prefix}"
     checkpoint_path = f"{cfg.app.checkpoint_base.rstrip('/')}/silver"
 
-    log.info(f"[SILVER] bronze_path={bronze_path}")
-    log.info(f"[SILVER] checkpoint={checkpoint_path}")
+    logger.info(f"[SILVER] bronze_path={bronze_path}")
+    logger.info(f"[SILVER] checkpoint={checkpoint_path}")
 
     bronze_stream = (
         spark.readStream.format("delta")
@@ -120,6 +118,6 @@ def stream_silver(spark: SparkSession, cfg: Config) -> None:
         .start()
     )
 
-    log.info(
+    logger.info(
         f"[SILVER] Streaming started from {bronze_path} -> checkpoint @ {checkpoint_path}"
     )

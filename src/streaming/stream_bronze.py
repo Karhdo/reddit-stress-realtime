@@ -1,10 +1,8 @@
 from pyspark.sql import SparkSession, functions as F
 
-from src.common.logging_utils import get_logger
 from src.common.schema import reddit_post_schema
 from src.common.config import Config
-
-log = get_logger(__name__)
+from loguru import logger
 
 
 def stream_bronze(spark: SparkSession, cfg: Config) -> None:
@@ -38,4 +36,6 @@ def stream_bronze(spark: SparkSession, cfg: Config) -> None:
         .start(bronze_path)
     )
 
-    log.info(f"[BRONZE] Kafka → Delta @ {bronze_path} | checkpoint @ {checkpoint_path}")
+    logger.info(
+        f"[BRONZE] Kafka → Delta @ {bronze_path} | checkpoint @ {checkpoint_path}"
+    )

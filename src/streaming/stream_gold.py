@@ -1,16 +1,15 @@
 from __future__ import annotations
 
+
 from typing import Iterator, List
 import pandas as pd
 from delta.tables import DeltaTable
 from pyspark.sql import SparkSession, DataFrame, functions as F, types as T
 from pyspark.sql.functions import pandas_udf
+from loguru import logger
 
-from src.common.logging_utils import get_logger
 from src.common.config import Config
 from src.model.infer import get_service  # worker-local singleton
-
-log = get_logger(__name__)
 
 # Gold layer (stress classifier only, no embeddings)
 # Data is written to Delta Lake partitioned by `dt`.
@@ -94,7 +93,7 @@ def _init_gold_if_needed(spark: SparkSession, gold_path: str) -> None:
             .partitionBy("dt")
             .save(gold_path)
         )
-        log.info(
+        logger.info(
             f"[GOLD] Initialized empty Delta table at {gold_path} (partitionBy=dt)"
         )
 
@@ -164,7 +163,7 @@ def _to_gold(batch_df: DataFrame, batch_id: int, cfg: Config) -> None:
     gold_path = f"s3a://{cfg.minio.bucket}/{cfg.sink.gold_prefix}"
 
     n_in = batch_df.count()
-    log.info(f"[GOLD] batch_id={batch_id} | input_rows={n_in}")
+    logger.info(f"[GOLD] batch_id={batch_id} | input_rows={n_in}")
     if n_in == 0:
         return
 
@@ -179,7 +178,7 @@ def _to_gold(batch_df: DataFrame, batch_id: int, cfg: Config) -> None:
         .save(gold_path)
     )
 
-    log.info(
+    logger.info(
         f"[GOLD] ✅ Wrote {out_df.count()} rows to {gold_path} (batch_id={batch_id})"
     )
 
@@ -187,7 +186,7 @@ def _to_gold(batch_df: DataFrame, batch_id: int, cfg: Config) -> None:
 # ====== Stream entry ======
 def stream_gold(spark: SparkSession, cfg: Config) -> None:
     """Main entry point for Gold stream — runs stress classification and writes partitioned Delta."""
-    log.info(
+    logger.info(
         "🚀 Starting Gold streaming job (stress classifier only, partitioned by dt)…"
     )
 
@@ -196,8 +195,8 @@ def stream_gold(spark: SparkSession, cfg: Config) -> None:
     silver_path = f"s3a://{cfg.minio.bucket}/{cfg.sink.silver_prefix}"
     checkpoint_path = f"{cfg.app.checkpoint_base.rstrip('/')}/gold"
 
-    log.info(f"[GOLD] silver_path={silver_path}")
-    log.info(f"[GOLD] checkpoint={checkpoint_path}")
+    logger.info(f"[GOLD] silver_path={silver_path}")
+    logger.info(f"[GOLD] checkpoint={checkpoint_path}")
 
     silver_stream = spark.readStream.format("delta").load(silver_path)
 
@@ -209,6 +208,6 @@ def stream_gold(spark: SparkSession, cfg: Config) -> None:
         .start()
     )
 
-    log.info(
+    logger.info(
         f"[GOLD] Streaming started from {silver_path} -> checkpoint @ {checkpoint_path}"
     )
