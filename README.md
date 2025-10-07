@@ -124,4 +124,4 @@ Implements a **singleton InferenceService** per Spark executor:
 
 ## 🧑‍💻 Author
 
-Reddit Stress Streaming Developed by **Karhdo & Ziduck** - October 2025
+Reddit Stress Streaming Developed by **[Karhdo](https://github.com/karhdo) & [Ziduck](https://github.com/ziduck)** - October 2025
