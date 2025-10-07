@@ -1,6 +1,6 @@
 import json
 import time
-from typing import Any
+from typing import Any, Iterable
 
 import praw
 from kafka import KafkaProducer
@@ -11,12 +11,7 @@ from src.common.schema import RedditPost
 
 
 def _to_bytes(v: Any) -> bytes:
-    """
-    Chuẩn hoá value_serializer:
-    - Nếu đã là bytes -> trả nguyên.
-    - Nếu là str/dict -> json.dumps và encode utf-8.
-    - Nếu là object có .to_kafka_value() -> gọi và đảm bảo trả bytes.
-    """
+    """Normalize messages to bytes for Kafka."""
     if isinstance(v, (bytes, bytearray)):
         return bytes(v)
     if hasattr(v, "to_kafka_value"):
@@ -28,11 +23,11 @@ def _to_bytes(v: Any) -> bytes:
         return json.dumps(data, ensure_ascii=False).encode("utf-8")
     if isinstance(v, str):
         return v.encode("utf-8")
-    # fallback: JSON
     return json.dumps(v, ensure_ascii=False).encode("utf-8")
 
 
 def make_producer(bootstrap_servers: str) -> KafkaProducer:
+    """Build a KafkaProducer tuned for low-latency small batches."""
     return KafkaProducer(
         bootstrap_servers=bootstrap_servers,
         value_serializer=_to_bytes,
@@ -43,67 +38,71 @@ def make_producer(bootstrap_servers: str) -> KafkaProducer:
     )
 
 
+def _iter_posts(reddit: praw.Reddit, subreddits: Iterable[str], query: str):
+    """Yield posts from multiple subreddits using a simple search strategy."""
+    for sub in subreddits:
+        for post in reddit.subreddit(sub).search(query, sort="new", limit=10):
+            yield post
+
+
 def run() -> None:
-    cfg = load_config()  # đọc từ configs/config.yaml + ${ENV}
-    # ---- Lấy config cần thiết ----
+    """
+    Stream Reddit posts to Kafka.
+
+    Config expects:
+    - cfg.kafka.bootstrap_servers, cfg.kafka.topic_posts
+    - cfg.reddit.client_id, client_secret, user_agent, subreddits, query, poll_interval
+    """
+    cfg = load_config()
+
     bootstrap = cfg.kafka.bootstrap_servers
     topic = cfg.kafka.topic_posts
-
-    # Các trường dưới giả định bạn có dataclass RedditCfg trong config_types (client_id, client_secret, user_agent, subreddits, query, poll_interval)
-    # Nếu tên khác, đổi lại cho khớp.
     rcfg = getattr(cfg, "reddit", None)
     if rcfg is None:
-        raise ValueError(
-            "Missing 'reddit' section in config. Please add it to configs/config.yaml"
-        )
+        raise ValueError("Missing 'reddit' section in config.yaml")
 
-    client_id = rcfg.client_id
-    client_secret = rcfg.client_secret
-    user_agent = rcfg.user_agent or "stress-stream/0.1"
+    reddit = praw.Reddit(
+        client_id=rcfg.client_id,
+        client_secret=rcfg.client_secret,
+        user_agent=rcfg.user_agent or "stress-stream/0.1",
+    )
+    producer = make_producer(bootstrap)
+
     subreddits = rcfg.subreddits or ["stress", "depression"]
     query = rcfg.query or "stress"
-    poll_interval = getattr(rcfg, "poll_interval", 2)
+    poll_interval = int(getattr(rcfg, "poll_interval", 2))
 
     logger.info(
-        f"Starting Reddit producer | bootstrap={bootstrap} | topic={topic} | subreddits={subreddits} | query={query}"
+        f"Starting Reddit producer | bootstrap={bootstrap} | topic={topic} | "
+        f"subreddits={subreddits} | query={query}"
     )
-
-    # ---- Reddit client ----
-    reddit = praw.Reddit(
-        client_id=client_id,
-        client_secret=client_secret,
-        user_agent=user_agent,
-    )
-
-    # ---- Kafka producer ----
-    producer = make_producer(bootstrap)
 
     while True:
         try:
-            for sub in subreddits:
-                # Tìm bài mới theo query mỗi vòng lặp
-                for post in reddit.subreddit(sub).search(query, sort="new", limit=10):
-                    logger.debug(f"Post: {post.id} | {post.title} | {post.created_utc}")
+            sent = 0
+            for post in _iter_posts(reddit, subreddits, query):
+                logger.debug(f"Post: {post.id} | {post.title} | {post.created_utc}")
 
-                    rp = RedditPost(
-                        post_id=post.id,
-                        author=str(post.author) if post.author else None,
-                        subreddit=str(post.subreddit),
-                        created_utc=float(post.created_utc),
-                        title=post.title or "",
-                        selftext=post.selftext or "",
-                        permalink=getattr(post, "permalink", None),
-                        upvotes=getattr(post, "ups", 0),  # map 'ups' -> 'upvotes'
-                        num_comments=getattr(post, "num_comments", 0),
-                    )
-                    producer.send(topic, rp)  # value_serializer sẽ xử lý thành bytes
+                msg = RedditPost(
+                    post_id=post.id,
+                    author=str(post.author) if post.author else None,
+                    subreddit=str(post.subreddit),
+                    created_utc=float(getattr(post, "created_utc", 0.0)),
+                    title=post.title or "",
+                    selftext=post.selftext or "",
+                    permalink=getattr(post, "permalink", None),
+                    upvotes=int(getattr(post, "ups", 0)),
+                    num_comments=int(getattr(post, "num_comments", 0)),
+                )
+                producer.send(topic, msg)
+                sent += 1
+
             producer.flush()
-
             logger.info(
-                f"Sent posts to Kafka topic {topic}. Sleeping {poll_interval}s..."
+                f"Sent {sent} post(s) to Kafka topic '{topic}'. Sleeping {poll_interval}s..."
             )
+            time.sleep(poll_interval)
 
-            time.sleep(int(poll_interval))
         except Exception as e:
             logger.exception(e)
             time.sleep(5)
