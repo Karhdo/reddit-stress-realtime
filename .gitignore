@@ -9,6 +9,7 @@ venv/
 
 # Data & artifacts
 .data/
+spark-warehouse
 
 # Tooling
 .ruff_cache/
