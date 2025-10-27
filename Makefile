@@ -22,13 +22,14 @@ S3A_SSL_ENABLED ?= false
 DELTA_LOG_STORE ?= org.apache.spark.sql.delta.storage.S3SingleDriverLogStore
 
 # ==== App / Config ====
-KAFKA_BOOTSTRAP ?= localhost:9092    # if Spark in Docker network: kafka:29092
+# KRaft compose: 9092 (trong network), 19092 (host)
+KAFKA_BOOTSTRAP_SERVERS ?= localhost:19092
 MINIO_BUCKET ?= datalake
 APP_MODE ?= bronze                   # bronze | silver | gold
 CHECKPOINT_BASE ?= s3a://$(MINIO_BUCKET)/_checkpoints
 APP_ENTRY ?= src/streaming/app.py
 
-.PHONY: producer stream_bronze stream_silver stream_gold train topics lint format test zip
+.PHONY: producer stream_bronze stream_silver stream_gold train topics topics_host lint format test zip
 
 zip:
 	@echo "Zipping src/ -> $(PYFILES)"
@@ -36,13 +37,13 @@ zip:
 
 producer:
 	PYTHONPATH=$(PROJECT_ROOT) \
-	KAFKA_BOOTSTRAP_SERVERS=$(KAFKA_BOOTSTRAP) \
+	KAFKA_BOOTSTRAP_SERVERS=$(KAFKA_BOOTSTRAP_SERVERS) \
 	$(PYTHON) -m src.producer.reddit_producer
 
 # Bronze: Kafka -> Delta (MinIO)
 stream_bronze: zip
 	PYTHONPATH=$(PROJECT_ROOT) \
-	KAFKA_BOOTSTRAP=$(KAFKA_BOOTSTRAP) \
+	KAFKA_BOOTSTRAP_SERVERS=$(KAFKA_BOOTSTRAP_SERVERS) \
 	MINIO_BUCKET=$(MINIO_BUCKET) \
 	APP_MODE=bronze \
 	CHECKPOINT_BASE=$(CHECKPOINT_BASE) \
@@ -107,12 +108,12 @@ train:
 	PYTHONPATH=$(PROJECT_ROOT) \
 	$(PYTHON) -m src.model.train
 
+# Tạo topic bên trong container (bootstrap: kafka:9092)
 topics:
-	@echo "Creating topics..." ; \
-	docker compose exec -T kafka kafka-topics --bootstrap-server kafka:29092 \
+	@echo "Creating topics in container (kafka:9092)..." ; \
+	docker compose exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
 	  --create --topic reddit_posts --if-not-exists --replication-factor 1 --partitions 3 ; \
-	docker compose exec -T kafka kafka-topics --bootstrap-server kafka:29092 \
-	  --create --topic classified_posts --if-not-exists --replication-factor 1 --partitions 3
+	docker compose exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list
 
 lint:
 	ruff check .

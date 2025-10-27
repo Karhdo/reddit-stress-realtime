@@ -1,5 +1,5 @@
 kafka:
-  bootstrap_servers: '${KAFKA_BOOTSTRAP:-localhost:9092}'
+  bootstrap_servers: '${KAFKA_BOOTSTRAP:-localhost:19092}'
   topic_posts: 'reddit_posts'
   starting_offsets: 'latest'
 
@@ -21,13 +21,23 @@ spark:
     spark.jars.packages: 'io.delta:delta-spark_2.12:3.2.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.767'
     spark.sql.extensions: 'io.delta.sql.DeltaSparkSessionExtension'
     spark.sql.catalog.spark_catalog: 'org.apache.spark.sql.delta.catalog.DeltaCatalog'
+
+    # S3A / MinIO
     spark.hadoop.fs.s3a.endpoint: 'http://localhost:9000'
     spark.hadoop.fs.s3a.access.key: 'minio'
     spark.hadoop.fs.s3a.secret.key: 'minio123'
     spark.hadoop.fs.s3a.path.style.access: 'true'
     spark.hadoop.fs.s3a.connection.ssl.enabled: 'false'
     spark.hadoop.fs.s3a.impl: 'org.apache.hadoop.fs.s3a.S3AFileSystem'
+    # ⚠️ Rất nên thêm dòng này để tránh AWS metadata/SDK v1 warning:
+    spark.hadoop.fs.s3a.aws.credentials.provider: 'org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider'
+
+    # Delta trên S3 (single driver)
     spark.delta.logStore.class: 'org.apache.spark.sql.delta.storage.S3SingleDriverLogStore'
+
+    # Khuyến nghị thêm:
+    spark.sql.session.timeZone: 'UTC'
+    spark.sql.adaptive.enabled: 'true'
 
 app:
   name: 'reddit-pipeline'
@@ -43,7 +53,7 @@ reddit:
   poll_interval: 10
 
 model:
-  # embedding
+  # embedding (hiện bạn đang focus classifier; vẫn giữ để linh hoạt)
   embedding_model: 'sentence-transformers/all-MiniLM-L6-v2'
   batch_size: 32
   feature_version: 'v1'

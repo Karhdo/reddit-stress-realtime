@@ -9,6 +9,7 @@ venv/
 
 # Data & artifacts
 .data/
+data/
 spark-warehouse
 
 # Tooling

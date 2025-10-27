@@ -106,6 +106,7 @@ def stream_silver(spark: SparkSession, cfg: Config) -> None:
 
     bronze_stream = (
         spark.readStream.format("delta")
+        .option("startingVersion", 0) # Only for first bootstrap
         .load(bronze_path)
         .withWatermark("event_time", "15 minutes")
     )
