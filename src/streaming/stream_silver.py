@@ -1,56 +1,83 @@
+from __future__ import annotations
+
 from delta.tables import DeltaTable
-from pyspark.sql import SparkSession, DataFrame, functions as F
-
 from loguru import logger
+from pyspark.sql import DataFrame, SparkSession, functions as F, Window
+
 from src.common.config import Config
-
-# Target Silver schema (ensures stable MERGE columns)
-SILVER_COLS = [
-    "post_id",
-    "subreddit",
-    "title",
-    "selftext",
-    "permalink",
-    "created_utc",
-    "upvotes",
-    "num_comments",
-    "author",
-    "event_time",
-    "dt",
-    "ingest_ts",
-]
+from src.common.schema import SILVER_COLS, get_silver_schema
 
 
-def _init_silver_if_needed(
-    spark: SparkSession, silver_path: str, sample_df: DataFrame
-) -> None:
-    """Create empty Delta table with the desired schema if it doesn't exist."""
-    if not DeltaTable.isDeltaTable(spark, silver_path):
-        (
-            sample_df.select(*SILVER_COLS)
-            .limit(0)
-            .write.format("delta")
-            .mode("overwrite")
-            .save(silver_path)
-        )
-        logger.info(f"[SILVER] Initialized empty Delta table at {silver_path}")
-
-
-def _clean_bronze(batch_df: DataFrame) -> DataFrame:
-    """Trim long text, fill numeric nulls, drop empty posts, ensure dt exists."""
-    df = (
-        batch_df.withColumn("title", F.substring(F.col("title"), 1, 5000))
-        .withColumn("selftext", F.substring(F.col("selftext"), 1, 20000))
-        .na.fill({"upvotes": 0, "num_comments": 0})
-        .where((F.length("title") > 0) | (F.length("selftext") > 0))
+def _ensure_silver_table(spark: SparkSession, silver_path: str) -> None:
+    # Create an empty Silver Delta table once (idempotent).
+    if DeltaTable.isDeltaTable(spark, silver_path):
+        return
+    (
+        spark.createDataFrame([], get_silver_schema())
+        .write.format("delta")
+        .mode("overwrite")
+        .save(silver_path)
     )
+    logger.info(f"[SILVER] Initialized Delta table at {silver_path}")
+
+
+def _project_and_clean(df: DataFrame) -> DataFrame:
+    # Select, sanitize, and complete required columns.
+    # Keep only needed columns (if present)
+    cols_present = [c for c in SILVER_COLS if c in df.columns]
+    df = df.select(*cols_present)
+
+    # Trim long text & fill numeric nulls
+    df = (
+        df.withColumn("title", F.substring(F.col("title").cast("string"), 1, 5000))
+        .withColumn("selftext", F.substring(F.col("selftext").cast("string"), 1, 20000))
+        .withColumn("upvotes", F.col("upvotes").cast("long"))
+        .withColumn("num_comments", F.col("num_comments").cast("long"))
+        .na.fill({"upvotes": 0, "num_comments": 0})
+    )
+
+    # Drop empty posts (no title & no selftext)
+    df = df.where((F.length(F.col("title")) > 0) | (F.length(F.col("selftext")) > 0))
+
+    # Normalize timestamps & derive dt
+    df = df.withColumn("event_time", F.col("event_time").cast("timestamp"))
+    df = df.withColumn("ingest_ts", F.col("ingest_ts").cast("timestamp"))
+    df = df.withColumn("created_utc", F.col("created_utc").cast("timestamp"))
     if "dt" not in df.columns:
-        df = df.withColumn("dt", F.to_date("event_time"))
+        df = df.withColumn("dt", F.to_date(F.col("event_time")))
     return df
 
 
-def _upsert_silver(batch_df: DataFrame, batch_id: int, cfg: Config) -> None:
-    """Deduplicate on post_id (latest ingest_ts wins) and MERGE into Silver."""
+def _dedup_latest(df: DataFrame) -> DataFrame:
+    # Deduplicate by post_id (latest ingest_ts, then latest event_time).
+    w = Window.partitionBy("post_id").orderBy(
+        F.col("ingest_ts").desc_nulls_last(), F.col("event_time").desc_nulls_last()
+    )
+    # Keep row_number == 1 for each post_id
+    df = df.withColumn("rn", F.row_number().over(w)).where(F.col("rn") == 1).drop("rn")
+    # Project to fixed Silver columns (stable schema)
+    return df.select(*SILVER_COLS)
+
+
+def _merge_into_silver(spark: SparkSession, df: DataFrame, silver_path: str) -> None:
+    # MERGE deduplicated rows into the Silver Delta table.
+    tgt = DeltaTable.forPath(spark, silver_path)
+    src = df.alias("s")
+    tgt_alias = tgt.alias("t")
+
+    # Build SET map dynamically (t.col = s.col for all SILVER_COLS)
+    set_map = {c: F.col(f"s.{c}") for c in SILVER_COLS}
+
+    (
+        tgt_alias.merge(src, "t.post_id = s.post_id")
+        .whenMatchedUpdate(set=set_map)
+        .whenNotMatchedInsert(values=set_map)
+        .execute()
+    )
+
+
+def _process_batch(batch_df: DataFrame, batch_id: int, cfg: Config) -> None:
+    # Per-batch handler: clean → dedup → merge.
     spark = batch_df.sparkSession
     silver_path = f"s3a://{cfg.minio.bucket}/{cfg.sink.silver_prefix}"
 
@@ -59,43 +86,18 @@ def _upsert_silver(batch_df: DataFrame, batch_id: int, cfg: Config) -> None:
     if n_in == 0:
         return
 
-    cleaned = _clean_bronze(batch_df)
-    _init_silver_if_needed(spark, silver_path, cleaned)
+    _ensure_silver_table(spark, silver_path)
+    cleaned = _project_and_clean(batch_df)
+    staged = _dedup_latest(cleaned)
+    _merge_into_silver(spark, staged, silver_path)
 
-    cleaned.createOrReplaceTempView("bronze_view")
-    spark.sql(
-        """
-        SELECT
-          *,
-          ROW_NUMBER() OVER (
-            PARTITION BY post_id
-            ORDER BY ingest_ts DESC NULLS LAST, event_time DESC NULLS LAST
-          ) AS rn
-        FROM bronze_view
-    """
-    ).createOrReplaceTempView("staged")
-
-    spark.sql(
-        f"""
-        CREATE OR REPLACE TEMP VIEW projected AS
-        SELECT {", ".join(SILVER_COLS)} FROM staged WHERE rn = 1
-    """
+    logger.info(
+        f"[SILVER] ✅ Upserted batch_id={batch_id} into {silver_path} | rows={staged.count()}"
     )
-
-    spark.sql(
-        f"""
-        MERGE INTO delta.`{silver_path}` AS t
-        USING projected AS s
-        ON t.post_id = s.post_id
-        WHEN MATCHED THEN UPDATE SET *
-        WHEN NOT MATCHED THEN INSERT *
-    """
-    )
-    logger.info(f"[SILVER] ✅ Upserted batch_id={batch_id} into {silver_path}")
 
 
 def stream_silver(spark: SparkSession, cfg: Config) -> None:
-    """Main entry for Silver stream: read Bronze, clean/dedup, MERGE to Silver."""
+    # 1. Entry point: read Bronze stream → foreachBatch upsert to Silver.
     logger.info("🚀 Starting Silver streaming job…")
 
     bronze_path = f"s3a://{cfg.minio.bucket}/{cfg.sink.bronze_prefix}"
@@ -104,18 +106,21 @@ def stream_silver(spark: SparkSession, cfg: Config) -> None:
     logger.info(f"[SILVER] bronze_path={bronze_path}")
     logger.info(f"[SILVER] checkpoint={checkpoint_path}")
 
+    # 2. Read Bronze as stream, set watermark for late data
     bronze_stream = (
         spark.readStream.format("delta")
-        .option("startingVersion", 0) # Only for first bootstrap
+        .option("startingVersion", 0)  # only meaningful for first bootstrap
+        .option("maxOffsetsPerTrigger", 5)
         .load(bronze_path)
         .withWatermark("event_time", "15 minutes")
     )
 
+    # 3. Upsert Silver in foreachBatch
     (
         bronze_stream.writeStream.queryName("silver-upsert")
-        .foreachBatch(lambda df, bid: _upsert_silver(df, bid, cfg))
+        .foreachBatch(lambda df, bid: _process_batch(df, bid, cfg))
         .option("checkpointLocation", checkpoint_path)
-        .trigger(processingTime="10 seconds")
+        .trigger(processingTime="30 seconds")
         .start()
     )
 

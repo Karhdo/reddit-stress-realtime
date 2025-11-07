@@ -1,0 +1,20 @@
+# Venvs & caches
+.venv
+__pycache__/
+*.pyc
+
+# Git & OS
+.git
+.gitignore
+.DS_Store
+
+# Spark & data
+data/
+spark-warehouse/
+_checkpoints/
+src.zip
+
+# Models/artifacts
+outputs/
+models/
+artifacts/

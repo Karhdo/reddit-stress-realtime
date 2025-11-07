@@ -1,18 +1,12 @@
-version: "3.8"
-
 services:
-  # ======================
-  # Kafka (KRaft mode)
-  # ======================
   kafka:
     image: apache/kafka:3.7.1
     container_name: kafka
     hostname: kafka
     ports:
-      - "9092:9092"      # internal access (container-to-container)
-      - "19092:19092"    # external access from host
+      - '9092:9092'
+      - '19092:19092'
     environment:
-      # --- KRaft mode ---
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
@@ -21,19 +15,17 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-
-      # --- Basic configs ---
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_LOG_RETENTION_HOURS: 24
       KAFKA_NUM_PARTITIONS: 3
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
       KAFKA_LOG_DIRS: /var/lib/kafka/data
     volumes:
       - ./data/kafka:/var/lib/kafka/data
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:9092 >/dev/null 2>&1 || exit 1"]
+      test: ['CMD-SHELL', '/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:9092 >/dev/null 2>&1 || exit 1']
       interval: 10s
       timeout: 10s
       retries: 10
@@ -41,42 +33,36 @@ services:
     networks:
       - app-net
 
-  # ======================
-  # Kafka UI
-  # ======================
-  kafka-ui:
-    image: provectuslabs/kafka-ui:latest
-    container_name: kafka-ui
-    ports:
-      - "8080:8080"
-    environment:
-      KAFKA_CLUSTERS_0_NAME: "local-kraft"
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
-      KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL: PLAINTEXT
-    depends_on:
-      kafka:
-        condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - app-net
+  # kafka-ui:
+  #   image: provectuslabs/kafka-ui:latest
+  #   container_name: kafka-ui
+  #   ports:
+  #     - '8080:8080'
+  #   environment:
+  #     KAFKA_CLUSTERS_0_NAME: 'local-kraft'
+  #     KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+  #     KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL: PLAINTEXT
+  #   depends_on:
+  #     kafka:
+  #       condition: service_healthy
+  #   restart: unless-stopped
+  #   networks:
+  #     - app-net
 
-  # ======================
-  # MinIO
-  # ======================
   minio:
     image: minio/minio:latest
     container_name: minio
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # Web console
+      - '9000:9000'
+      - '9001:9001'
     environment:
       MINIO_ROOT_USER: minio
       MINIO_ROOT_PASSWORD: minio123
     volumes:
       - ./data/minio:/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/ready"]
+      test: ['CMD', 'curl', '-f', 'http://localhost:9000/minio/health/ready']
       interval: 5s
       timeout: 3s
       retries: 30
@@ -84,9 +70,6 @@ services:
     networks:
       - app-net
 
-  # ======================
-  # MinIO client (tạo bucket 'datalake')
-  # ======================
   minio-mc:
     image: minio/mc:latest
     container_name: minio-mc
@@ -106,6 +89,65 @@ services:
     restart: unless-stopped
     networks:
       - app-net
+
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: streamlit
+    ports:
+      - '8501:8501'
+    environment:
+      - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+      - S3_ENDPOINT_URL=http://minio:9000
+      - PYTHONPATH=/app
+      - POSTGRES_HOST=postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./apps/streamlit:/apps/streamlit
+    restart: unless-stopped
+    networks:
+      - app-net
+
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+      TZ: UTC
+    ports:
+      - '5432:5432'
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB -h localhost']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    networks: [app-net]
+
+  flyway:
+    image: flyway/flyway:10
+    container_name: flyway
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      -url=jdbc:postgresql://postgres:5432/postgres
+      -user=postgres
+      -password=postgres
+      -schemas=public
+      -baselineOnMigrate=true
+      migrate
+    volumes:
+      - ./migrations:/flyway/sql:ro
+    restart: 'no'
+    networks: [app-net]
 
 networks:
   app-net:

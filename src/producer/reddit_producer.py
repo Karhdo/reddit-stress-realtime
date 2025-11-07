@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import json
 import time
-from typing import Any, Iterable
+from typing import Any, Iterable, Set
 
 import praw
 from kafka import KafkaProducer
@@ -10,8 +12,8 @@ from src.common.config import load_config
 from src.common.schema import RedditPost
 
 
+# Helpers: normalize any message to Kafka bytes
 def _to_bytes(v: Any) -> bytes:
-    """Normalize messages to bytes for Kafka."""
     if isinstance(v, (bytes, bytearray)):
         return bytes(v)
     if hasattr(v, "to_kafka_value"):
@@ -26,86 +28,118 @@ def _to_bytes(v: Any) -> bytes:
     return json.dumps(v, ensure_ascii=False).encode("utf-8")
 
 
+# Build a Kafka producer (small batches, safe acks)
 def make_producer(bootstrap_servers: str) -> KafkaProducer:
-    """Build a KafkaProducer tuned for low-latency small batches."""
     return KafkaProducer(
         bootstrap_servers=bootstrap_servers,
         value_serializer=_to_bytes,
-        linger_ms=10,
         acks="all",
+        linger_ms=10,
         retries=3,
         compression_type="gzip",
     )
 
 
-def _iter_posts(reddit: praw.Reddit, subreddits: Iterable[str], query: str):
-    """Yield posts from multiple subreddits using a simple search strategy."""
+# Simple iterator over subreddit search results
+def _iter_posts(reddit: praw.Reddit, subreddits: Iterable[str], query: str, limit: int):
     for sub in subreddits:
-        for post in reddit.subreddit(sub).search(query, sort="new", limit=10):
+        for post in reddit.subreddit(sub).search(query, sort="new", limit=limit):
             yield post
 
 
+# Main loop: read from Reddit, send to Kafka, repeat
 def run() -> None:
-    """
-    Stream Reddit posts to Kafka.
-
-    Config expects:
-    - cfg.kafka.bootstrap_servers, cfg.kafka.topic_posts
-    - cfg.reddit.client_id, client_secret, user_agent, subreddits, query, poll_interval
-    """
+    # 1. Load config
     cfg = load_config()
-
     bootstrap = cfg.kafka.bootstrap_servers
     topic = cfg.kafka.topic_posts
-    rcfg = getattr(cfg, "reddit", None)
+    rcfg = cfg.reddit
     if rcfg is None:
         raise ValueError("Missing 'reddit' section in config.yaml")
 
+    # 2. Build Reddit API client
     reddit = praw.Reddit(
         client_id=rcfg.client_id,
         client_secret=rcfg.client_secret,
         user_agent=rcfg.user_agent or "stress-stream/0.1",
     )
+
+    # 3. Build Kafka producer
     producer = make_producer(bootstrap)
 
-    subreddits = rcfg.subreddits or ["stress", "depression"]
+    # 4. Read runtime params
+    subreddits = list(rcfg.subreddits or ["stress", "depression"])
     query = rcfg.query or "stress"
-    poll_interval = int(getattr(rcfg, "poll_interval", 2))
+    poll_interval = int(getattr(rcfg, "poll_interval", 5))
+    search_limit = int(getattr(rcfg, "search_limit", 25))
 
     logger.info(
-        f"Starting Reddit producer | bootstrap={bootstrap} | topic={topic} | "
-        f"subreddits={subreddits} | query={query}"
+        "Starting Reddit producer | bootstrap={} | topic={} | subreddits={} | query='{}' | limit={} | interval={}s",
+        bootstrap,
+        topic,
+        subreddits,
+        query,
+        search_limit,
+        poll_interval,
     )
 
-    while True:
-        try:
-            sent = 0
-            for post in _iter_posts(reddit, subreddits, query):
-                logger.debug(f"Post: {post.id} | {post.title} | {post.created_utc}")
+    # 5. Dedup memory (avoid resending the same IDs repeatedly)
+    seen: Set[str] = set()
+    max_seen = 10_000
 
-                msg = RedditPost(
-                    post_id=post.id,
-                    author=str(post.author) if post.author else None,
-                    subreddit=str(post.subreddit),
-                    created_utc=float(getattr(post, "created_utc", 0.0)),
-                    title=post.title or "",
-                    selftext=post.selftext or "",
-                    permalink=getattr(post, "permalink", None),
-                    upvotes=int(getattr(post, "ups", 0)),
-                    num_comments=int(getattr(post, "num_comments", 0)),
+    try:
+        while True:
+            try:
+                sent = 0
+                for post in _iter_posts(reddit, subreddits, query, search_limit):
+                    pid = getattr(post, "id", None)
+                    if not pid or pid in seen:
+                        continue
+
+                    msg = RedditPost(
+                        post_id=pid,
+                        author=str(post.author) if post.author else None,
+                        subreddit=str(post.subreddit),
+                        created_utc=float(getattr(post, "created_utc", 0.0)),
+                        title=post.title or "",
+                        selftext=post.selftext or "",
+                        permalink=getattr(post, "permalink", None),
+                        upvotes=int(getattr(post, "ups", 0)),
+                        num_comments=int(getattr(post, "num_comments", 0)),
+                    )
+
+                    producer.send(topic, msg)
+                    sent += 1
+                    seen.add(pid)
+
+                    # keep dedup set bounded
+                    if len(seen) > max_seen:
+                        # simple trimming: drop oldest chunk by recreating a small set
+                        seen = set(list(seen)[-max_seen // 2 :])
+
+                producer.flush()
+                logger.info(
+                    "Sent {} post(s) → topic='{}' | sleep {}s",
+                    sent,
+                    topic,
+                    poll_interval,
                 )
-                producer.send(topic, msg)
-                sent += 1
+                time.sleep(poll_interval)
 
-            producer.flush()
-            logger.info(
-                f"Sent {sent} post(s) to Kafka topic '{topic}'. Sleeping {poll_interval}s..."
-            )
-            time.sleep(poll_interval)
+            except Exception as e:
+                logger.exception("Producer loop error: {}", e)
+                time.sleep(5)
 
-        except Exception as e:
-            logger.exception(e)
-            time.sleep(5)
+    except KeyboardInterrupt:
+        logger.info("Stopping Reddit producer (KeyboardInterrupt).")
+
+    finally:
+        try:
+            producer.flush(10)
+            producer.close(10)
+        except Exception:
+            pass
+        logger.info("Producer closed.")
 
 
 if __name__ == "__main__":

@@ -1,66 +1,67 @@
 kafka:
-  bootstrap_servers: '${KAFKA_BOOTSTRAP:-localhost:19092}'
+  bootstrap_servers: '${KAFKA_BOOTSTRAP_SERVERS:-localhost:19092}'
   topic_posts: 'reddit_posts'
   starting_offsets: 'latest'
 
 minio:
-  bucket: 'datalake'
+  endpoint_url: '${S3_ENDPOINT_URL:-http://localhost:9000}'
+  access_key: '${AWS_ACCESS_KEY_ID:-minio}'
+  secret_key: '${AWS_SECRET_ACCESS_KEY:-minio123}'
+  bucket: '${MINIO_BUCKET:-datalake}'
 
 sink:
   bronze_prefix: 'bronze/reddit_posts'
   silver_prefix: 'silver/reddit_posts'
   gold_prefix: 'gold/reddit_posts'
-  bronze_table: 'bronze_reddit_posts'
-  silver_table: 'silver_reddit_posts'
-  gold_table: 'gold_reddit_posts'
+  gold_backend: 'postgres' # or 'delta'
 
 spark:
-  master: 'local[*]'
-  shuffle_partitions: 4
+  master: '${SPARK_MASTER:-local[*]}'
+  shuffle_partitions: ${SPARK_SHUFFLE_PARTITIONS:-4}
+
   extra_conf:
-    spark.jars.packages: 'io.delta:delta-spark_2.12:3.2.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.767'
     spark.sql.extensions: 'io.delta.sql.DeltaSparkSessionExtension'
     spark.sql.catalog.spark_catalog: 'org.apache.spark.sql.delta.catalog.DeltaCatalog'
-
-    # S3A / MinIO
-    spark.hadoop.fs.s3a.endpoint: 'http://localhost:9000'
-    spark.hadoop.fs.s3a.access.key: 'minio'
-    spark.hadoop.fs.s3a.secret.key: 'minio123'
-    spark.hadoop.fs.s3a.path.style.access: 'true'
-    spark.hadoop.fs.s3a.connection.ssl.enabled: 'false'
-    spark.hadoop.fs.s3a.impl: 'org.apache.hadoop.fs.s3a.S3AFileSystem'
-    # ⚠️ Rất nên thêm dòng này để tránh AWS metadata/SDK v1 warning:
-    spark.hadoop.fs.s3a.aws.credentials.provider: 'org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider'
-
-    # Delta trên S3 (single driver)
-    spark.delta.logStore.class: 'org.apache.spark.sql.delta.storage.S3SingleDriverLogStore'
-
-    # Khuyến nghị thêm:
     spark.sql.session.timeZone: 'UTC'
     spark.sql.adaptive.enabled: 'true'
+
+    # S3A / MinIO
+    spark.hadoop.fs.s3a.endpoint: '${S3_ENDPOINT_URL:-http://localhost:9000}'
+    spark.hadoop.fs.s3a.access.key: '${AWS_ACCESS_KEY_ID:-minio}'
+    spark.hadoop.fs.s3a.secret.key: '${AWS_SECRET_ACCESS_KEY:-minio123}'
+    spark.hadoop.fs.s3a.path.style.access: 'true'
+    spark.hadoop.fs.s3a.connection.ssl.enabled: 'false'
+    spark.hadoop.fs.s3a.aws.credentials.provider: 'org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider'
+    spark.hadoop.fs.s3a.impl: 'org.apache.hadoop.fs.s3a.S3AFileSystem'
+
+    # Delta log store for S3
+    spark.delta.logStore.class: 'org.apache.spark.sql.delta.storage.S3SingleDriverLogStore'
 
 app:
   name: 'reddit-pipeline'
   mode: '${APP_MODE:-bronze}'
-  checkpoint_base: 's3a://datalake/_checkpoints'
+  checkpoint_base: 's3a://${MINIO_BUCKET:-datalake}/_checkpoints'
 
 reddit:
   client_id: '${REDDIT_CLIENT_ID}'
   client_secret: '${REDDIT_CLIENT_SECRET}'
   user_agent: '${REDDIT_USER_AGENT:-stress-stream/0.1}'
-  subreddits: ['stress', 'depression']
-  query: 'stress'
-  poll_interval: 10
+  subreddits: ['Professors', 'PhD', 'GradSchool', 'csMajors', 'EngineeringStudents']
+  query: ''
+  search_limit: ${REDDIT_SEARCH_LIMIT:-25}
+  poll_interval: ${REDDIT_POLL_INTERVAL:-600000} # 10 minutes
 
 model:
-  # embedding (hiện bạn đang focus classifier; vẫn giữ để linh hoạt)
-  embedding_model: 'sentence-transformers/all-MiniLM-L6-v2'
-  batch_size: 32
-  feature_version: 'v1'
+  # 6) Chỉ dùng DistilBERT đã zip; cho phép override qua .env MODEL_URI
+  classification_model: '${MODEL_URI:-s3a://artifacts/models/20251104T073104Z/distilbert_finetuned.zip}'
+  classifier_label_index: ${CLASSIFIER_POS_IDX:-1}
+  classifier_batch_size: ${CLASSIFIER_BATCH_SIZE:-16}
+  classifier_threshold: ${CLASSIFIER_THRESHOLD:-0.5}
+  model_version: '${MODEL_VERSION:-distilbert-finetuned-v1}'
 
-  # classification
-  classification_model: 'distilbert-base-uncased-finetuned-sst-2-english'
-  classifier_label_index: 1
-  classifier_batch_size: 32
-  classifier_threshold: 0.6
-  model_version: 'sst2-v1'
+postgres:
+  host: '${POSTGRES_HOST:-localhost}'
+  port: ${POSTGRES_PORT:-5432}
+  database: '${POSTGRES_DB:-postgres}'
+  user: '${POSTGRES_USER:-postgres}'
+  password: '${POSTGRES_PASSWORD:-postgres}'

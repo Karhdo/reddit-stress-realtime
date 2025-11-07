@@ -1,25 +1,39 @@
-# Core dependencies
+# Core utilities & logging
 loguru==0.7.2
-praw==7.7.1
+python-dotenv>=1.0.1
 PyYAML==6.0.2
-kafka-python==2.0.2
 
-# Data processing & Spark (optional: Spark runtime provided separately)
+# Kafka + Reddit
+kafka-python==2.0.2
+praw==7.7.1
+
+# Spark & Delta Lake (cho pipeline Spark)
 pyspark==3.5.1
 delta-spark==3.2.0
 
-# Pandas UDF & Array / DataFrame ops
+# Data processing
 numpy>=1.25.0
 pandas>=2.1.0
 pyarrow>=15.0.0
 
-# Machine Learning / Deep Learning
+# S3 / MinIO access
+# (>=2024.6.0 để fix path-style/vhost issues)
+fsspec>=2024.6.0,<2025.0
+s3fs>=2024.6.0,<2025.0
+boto3>=1.34.0,<2.0.0
+
+# Machine Learning / NLP (pipeline gold sử dụng DistilBERT)
 torch>=2.2.0
 transformers>=4.41.0
 
-# Development & Testing
-pytest==8.3.2
-ruff==0.6.8
+# Web & Visualization (Streamlit app)
+streamlit>=1.39.0
+streamlit-autorefresh>=1.0.1
+deltalake>=0.18.0
+SQLAlchemy>=2.0
+psycopg2-binary>=2.9
 
-# Notebook
-matplotlib==3.8.0
+# Dev & Testing
+pytest>=8.3.2
+ruff>=0.6.8
+altair>=5.3.0
