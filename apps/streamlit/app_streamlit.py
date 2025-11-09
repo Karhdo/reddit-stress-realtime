@@ -18,6 +18,7 @@ from src.common.config import load_config, Config
 # 1) Config & DB engine
 # =========================
 
+
 @st.cache_resource(show_spinner=False)
 def load_cfg() -> Config:
     """1) Load config once."""
@@ -45,6 +46,7 @@ def mk_engine(cfg: Config):
 # =========================
 # 2) Data access (cached)
 # =========================
+
 
 @st.cache_data(show_spinner=True, ttl=5)
 def read_gold(_engine, table: str, limit: Optional[int]) -> pd.DataFrame:
@@ -79,6 +81,7 @@ def normalize_gold(df: pd.DataFrame) -> pd.DataFrame:
 # =========================
 # 3) UI: Filters & KPIs
 # =========================
+
 
 @dataclass
 class UIFilters:
@@ -121,7 +124,9 @@ def filter_panel(df: pd.DataFrame) -> tuple[UIFilters, int, int]:
         key="date_range_input",
     )
 
-    subs = sorted(df.get("subreddit", pd.Series([], dtype="string")).dropna().unique().tolist())
+    subs = sorted(
+        df.get("subreddit", pd.Series([], dtype="string")).dropna().unique().tolist()
+    )
     default_subs = subs[: min(5, len(subs))] if subs else []
     sel_subs = st.sidebar.multiselect(
         "Subreddits",
@@ -132,11 +137,18 @@ def filter_panel(df: pd.DataFrame) -> tuple[UIFilters, int, int]:
 
     th = st.sidebar.slider(
         "Stress score ≥",
-        0.0, 1.0, 0.5, 0.05,
+        0.0,
+        1.0,
+        0.5,
+        0.05,
         key="stress_threshold_slider",
     )
 
-    return UIFilters(start=start, end=end, sel_subs=sel_subs, th=th), refresh_sec, max_rows
+    return (
+        UIFilters(start=start, end=end, sel_subs=sel_subs, th=th),
+        refresh_sec,
+        max_rows,
+    )
 
 
 def apply_filters(df: pd.DataFrame, f: UIFilters) -> pd.DataFrame:
@@ -175,6 +187,7 @@ def kpi_block(df: pd.DataFrame):
 # 4) Advanced charts
 # =========================
 
+
 def heatmap_chart(df: pd.DataFrame):
     """8) Heatmap: posts per day × subreddit."""
     if df.empty or not {"dt", "subreddit"}.issubset(df.columns):
@@ -192,7 +205,9 @@ def heatmap_chart(df: pd.DataFrame):
         .encode(
             x=alt.X("dt:T", title="Date"),
             y=alt.Y("subreddit:N", title="Subreddit"),
-            color=alt.Color("count:Q", title="Posts / day", scale=alt.Scale(scheme="blues")),
+            color=alt.Color(
+                "count:Q", title="Posts / day", scale=alt.Scale(scheme="blues")
+            ),
             tooltip=["dt:T", "subreddit:N", "count:Q"],
         )
         .properties(height=360)
@@ -211,12 +226,7 @@ def wordcloud_chart(df: pd.DataFrame, max_words: int = 100):
         """a an and the or is are be been being i me my we our you your he she it they them his her its their to for of in on with from as by this that these those not no do does did have has had at just very really about into over out up down more most less least can could should would may might will""".split()
     )
     s = " ".join((df["title"].dropna().astype(str).values.tolist()))
-    tokens = (
-        pd.Series(s)
-        .str.replace(r"[^A-Za-z0-9 ]", " ", regex=True)
-        .iloc[0]
-        .split()
-    )
+    tokens = pd.Series(s).str.replace(r"[^A-Za-z0-9 ]", " ", regex=True).iloc[0].split()
     tokens = [t.lower() for t in tokens if len(t) > 2 and t.lower() not in stop]
     if not tokens:
         st.info("No tokens for word cloud.")
@@ -282,7 +292,9 @@ def insights_panel(df: pd.DataFrame, top_k: int = 5):
 
     st.markdown("**Most stressed recent posts**")
     if not top_posts.empty:
-        st.dataframe(top_posts.reset_index(drop=True), use_container_width=True, height=300)
+        st.dataframe(
+            top_posts.reset_index(drop=True), use_container_width=True, height=300
+        )
     else:
         st.info("No high-stress posts yet.")
 
@@ -290,6 +302,7 @@ def insights_panel(df: pd.DataFrame, top_k: int = 5):
 # =========================
 # 5) Main App
 # =========================
+
 
 def main():
     st.set_page_config(page_title="Reddit Stress Monitor (Postgres)", layout="wide")
@@ -350,13 +363,17 @@ def main():
             line = (
                 alt.Chart(daily)
                 .mark_line(point=True)
-                .encode(x=alt.X("dt:T", title="Date"), y=alt.Y("count:Q", title="Posts"))
+                .encode(
+                    x=alt.X("dt:T", title="Date"), y=alt.Y("count:Q", title="Posts")
+                )
                 .properties(height=280)
             )
             st.altair_chart(line, use_container_width=True)
 
         st.subheader("Avg stress score by subreddit")
-        if {"subreddit", "score_stress"}.issubset(filtered.columns) and not filtered.empty:
+        if {"subreddit", "score_stress"}.issubset(
+            filtered.columns
+        ) and not filtered.empty:
             agg = (
                 filtered.dropna(subset=["subreddit"])
                 .groupby("subreddit")["score_stress"]
@@ -371,7 +388,10 @@ def main():
                     .encode(
                         x=alt.X("score_stress:Q", title="Avg stress"),
                         y=alt.Y("subreddit:N", sort="-x", title="Subreddit"),
-                        tooltip=["subreddit:N", alt.Tooltip("score_stress:Q", format=".3f")],
+                        tooltip=[
+                            "subreddit:N",
+                            alt.Tooltip("score_stress:Q", format=".3f"),
+                        ],
                     )
                     .properties(height=360)
                 )
