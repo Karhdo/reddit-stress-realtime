@@ -18,7 +18,7 @@ def stream_bronze(spark: SparkSession, cfg: Config) -> None:
             "startingOffsets", cfg.kafka.starting_offsets
         )  # e.g., "latest" | "earliest"
         .option("failOnDataLoss", "false")
-        .option("maxOffsetsPerTrigger", 5)
+        .option("maxOffsetsPerTrigger", 50)
         .load()
     )
 

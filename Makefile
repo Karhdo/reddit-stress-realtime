@@ -12,12 +12,7 @@ HADOOP_AWS_VERSION ?= 3.3.4
 AWS_SDK_BUNDLE_VERSION ?= 1.12.767
 
 # Spark packages: Kafka + Delta + S3A + Postgres JDBC
-SPARK_PACKAGES := \
-  org.apache.spark:spark-sql-kafka-0-10_$(SCALA_BINARY):$(SPARK_VERSION),\
-  io.delta:delta-spark_$(SCALA_BINARY):$(DELTA_VERSION),\
-  org.apache.hadoop:hadoop-aws:$(HADOOP_AWS_VERSION),\
-  com.amazonaws:aws-java-sdk-bundle:$(AWS_SDK_BUNDLE_VERSION),\
-  org.postgresql:postgresql:42.7.4
+SPARK_PACKAGES := org.apache.spark:spark-sql-kafka-0-10_$(SCALA_BINARY):$(SPARK_VERSION),io.delta:delta-spark_$(SCALA_BINARY):$(DELTA_VERSION),org.apache.hadoop:hadoop-aws:$(HADOOP_AWS_VERSION),com.amazonaws:aws-java-sdk-bundle:$(AWS_SDK_BUNDLE_VERSION),org.postgresql:postgresql:42.7.4
 
 # ===== Load .env (single source of truth) =====
 ifneq (,$(wildcard .env))
@@ -32,7 +27,7 @@ APP_ENTRY ?= src/streaming/app.py
 # ===== Common Spark flags (DRY) =====
 SPARK_COMMON := \
   --master local[*] \
-  --packages $(SPARK_PACKAGES) \
+  --packages "$(SPARK_PACKAGES)" \
   --conf spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension \
   --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog \
   --conf spark.sql.session.timeZone=UTC \

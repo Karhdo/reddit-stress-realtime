@@ -21,7 +21,7 @@ from src.common.config import load_config, Config
 
 @st.cache_resource(show_spinner=False)
 def load_cfg() -> Config:
-    """1) Load config once."""
+    """Load config once."""
     cfg = load_config()
     logger.info(
         "Loaded config | pg={}:{} db={} table={}",
@@ -35,7 +35,7 @@ def load_cfg() -> Config:
 
 @st.cache_resource(show_spinner=False)
 def mk_engine(cfg: Config):
-    """2) Create SQLAlchemy engine (cached)."""
+    """Create SQLAlchemy engine (cached)."""
     url = (
         f"postgresql+psycopg2://{cfg.postgres.user}:{cfg.postgres.password}"
         f"@{cfg.postgres.host}:{int(cfg.postgres.port)}/{cfg.postgres.database}"
@@ -50,7 +50,7 @@ def mk_engine(cfg: Config):
 
 @st.cache_data(show_spinner=True, ttl=5)
 def read_gold(_engine, table: str, limit: Optional[int]) -> pd.DataFrame:
-    """3) Read most-recent rows from Postgres with optional LIMIT (cached)."""
+    """Read most-recent rows from Postgres with optional LIMIT (cached)."""
     lim_sql = f"LIMIT {int(limit)}" if (limit and limit > 0) else ""
     sql = text(
         f"""
@@ -67,7 +67,7 @@ def read_gold(_engine, table: str, limit: Optional[int]) -> pd.DataFrame:
 
 
 def normalize_gold(df: pd.DataFrame) -> pd.DataFrame:
-    """4) Basic cleanup & sorting."""
+    """Basic cleanup & sorting."""
     if "created_utc" in df.columns:
         df["created_utc"] = pd.to_datetime(df["created_utc"], utc=True, errors="coerce")
     if "dt" in df.columns:
@@ -88,11 +88,11 @@ class UIFilters:
     start: date
     end: date
     sel_subs: List[str]
-    th: float  # threshold
+    th: float  # stress threshold
 
 
 def filter_panel(df: pd.DataFrame) -> tuple[UIFilters, int, int]:
-    """5) Render sidebar ONCE and return selected values (not filtered df)."""
+    """Render sidebar once and return selected values (not filtered df)."""
     st.sidebar.header("Filters")
 
     refresh_sec = st.sidebar.select_slider(
@@ -135,11 +135,12 @@ def filter_panel(df: pd.DataFrame) -> tuple[UIFilters, int, int]:
         key="subs_multiselect",
     )
 
+    # Lower default threshold so you still see most posts when scores are small
     th = st.sidebar.slider(
         "Stress score ≥",
         0.0,
         1.0,
-        0.5,
+        0.1,  # default 0.1 instead of 0.5
         0.05,
         key="stress_threshold_slider",
     )
@@ -151,36 +152,53 @@ def filter_panel(df: pd.DataFrame) -> tuple[UIFilters, int, int]:
     )
 
 
-def apply_filters(df: pd.DataFrame, f: UIFilters) -> pd.DataFrame:
-    """6) Apply previously chosen filters WITHOUT rendering widgets."""
+def filter_base(df: pd.DataFrame, f: UIFilters) -> pd.DataFrame:
+    """Apply date + subreddit filters (no stress filter)."""
     out = df.copy()
     if "dt" in out.columns and f.start and f.end:
         out = out[(out["dt"] >= f.start) & (out["dt"] <= f.end)]
     if f.sel_subs:
         out = out[out["subreddit"].isin(f.sel_subs)]
-    if "score_stress" in out.columns:
-        out = out[out["score_stress"].fillna(0) >= f.th]
     return out
 
 
-def kpi_block(df: pd.DataFrame):
-    """7) KPIs."""
+def apply_stress_threshold(df: pd.DataFrame, th: float) -> pd.DataFrame:
+    """Apply stress threshold on already filtered df."""
+    out = df.copy()
+    if "score_stress" in out.columns:
+        out = out[out["score_stress"].fillna(0) >= th]
+    return out
+
+
+def kpi_block(df: pd.DataFrame, stress_threshold: float):
+    """KPIs for overall + high-stress posts."""
     total = int(len(df))
+    avg_score = (
+        float(df["score_stress"].fillna(0).mean())
+        if "score_stress" in df.columns
+        else 0.0
+    )
     stress_rate = (
         float(df["label_stress"].fillna(0).mean() * 100)
         if "label_stress" in df.columns
         else 0.0
     )
-    avg_interact = (
-        float(df["interaction_rate"].fillna(0).mean())
-        if "interaction_rate" in df.columns
-        else 0.0
-    )
 
-    c1, c2, c3 = st.columns(3)
+    high_cnt = 0
+    high_pct = 0.0
+    if "score_stress" in df.columns and total > 0:
+        mask = df["score_stress"].fillna(0) >= stress_threshold
+        high_cnt = int(mask.sum())
+        high_pct = high_cnt / total * 100.0
+
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total posts", f"{total:,}")
-    c2.metric("Stress %", f"{stress_rate:.1f}%")
-    c3.metric("Avg interaction", f"{avg_interact:.3f}")
+    c2.metric("Avg stress score", f"{avg_score:.3f}")
+    c3.metric("Label stress %", f"{stress_rate:.1f}%")
+    c4.metric(
+        f"High-stress (≥ {stress_threshold:.2f})",
+        f"{high_cnt} ({high_pct:.1f}%)",
+    )
 
 
 # =========================
@@ -189,7 +207,7 @@ def kpi_block(df: pd.DataFrame):
 
 
 def heatmap_chart(df: pd.DataFrame):
-    """8) Heatmap: posts per day × subreddit."""
+    """Heatmap: posts per day × subreddit."""
     if df.empty or not {"dt", "subreddit"}.issubset(df.columns):
         st.info("Not enough data for heatmap.")
         return
@@ -217,7 +235,7 @@ def heatmap_chart(df: pd.DataFrame):
 
 
 def wordcloud_chart(df: pd.DataFrame, max_words: int = 100):
-    """9) Lightweight “word cloud” from titles (Altair text sizing)."""
+    """Lightweight “word cloud” from titles (Altair text sizing)."""
     if df.empty or "title" not in df.columns:
         st.info("Not enough data for word cloud.")
         return
@@ -255,7 +273,7 @@ def wordcloud_chart(df: pd.DataFrame, max_words: int = 100):
 
 
 def insights_panel(df: pd.DataFrame, top_k: int = 5):
-    # 1) Simple insights
+    """Simple rule-based insights."""
     if df.empty:
         st.info("No data for insights.")
         return
@@ -272,7 +290,7 @@ def insights_panel(df: pd.DataFrame, top_k: int = 5):
     top_posts = (
         df[["created_utc", "subreddit", "score_stress", "title", "permalink"]]
         .dropna(subset=["score_stress"])
-        .sort_values("score_stress", ascending=False)  # <-- sửa ở đây
+        .sort_values("score_stress", ascending=False)
         .head(top_k)
         if "score_stress" in df.columns
         else df.head(0)
@@ -311,13 +329,11 @@ def main():
     cfg = load_cfg()
     table = getattr(cfg.sink, "gold_table", "gold_reddit_posts")
 
-    # 1) Keep state for refresh + limit
     if "refresh_sec" not in st.session_state:
         st.session_state.refresh_sec = 10
     if "current_limit" not in st.session_state:
         st.session_state.current_limit = 10000
 
-    # 2) Create engine & initial query
     engine = mk_engine(cfg)
     try:
         df = read_gold(engine, table=table, limit=st.session_state.current_limit)
@@ -330,36 +346,41 @@ def main():
         st.info("No data found yet. Please run your streaming jobs and refresh.")
         st.stop()
 
-    # 3) Render sidebar ONCE → get filters + limits (no duplicate keys)
+    # Sidebar once → get filters + limits
     filters, refresh_sec, max_rows = filter_panel(df)
     st.session_state.refresh_sec = refresh_sec
 
-    # 4) If user increased max_rows, re-query ONCE without re-rendering widgets
+    # Re-query if user increased max_rows
     if max_rows > st.session_state.current_limit:
         try:
             st.session_state.current_limit = max_rows
-            read_gold.clear()  # bust cache for new limit
+            read_gold.clear()
             df = normalize_gold(read_gold(engine, table=table, limit=max_rows))
         except Exception as e:
             st.warning(f"Re-query failed: {e}")
 
-    # 5) Apply filters (no widget creation here)
-    filtered = apply_filters(df, filters)
+    # Base filtered (date + subreddit, no stress threshold)
+    base_df = filter_base(df, filters)
+    # High-stress subset (may be empty)
+    high_df = apply_stress_threshold(base_df, filters.th)
+    # For charts/insights we prefer high_df, but fallback to base_df
+    chart_df = high_df if not high_df.empty else base_df
 
-    # 6) Auto-refresh
+    # Auto-refresh
     if refresh_sec > 0:
         st.caption("Auto-refresh is enabled via `streamlit-autorefresh`.")
         st_autorefresh(interval=refresh_sec * 1000, key="auto-refresh")
 
-    # 7) Tabs: Overview | Heatmap | Word Cloud | Insights
+    # Tabs: Overview | Heatmap | Word Cloud | Insights
     tabs = st.tabs(["Overview", "Heatmap", "Word Cloud", "Insights"])
 
     with tabs[0]:
-        kpi_block(filtered)
+        # KPIs use all posts (within date + subs)
+        kpi_block(base_df, filters.th)
 
         st.subheader("Posts over time")
-        if "dt" in filtered.columns and filtered["dt"].notna().any():
-            daily = filtered.groupby("dt").size().reset_index(name="count")
+        if "dt" in chart_df.columns and chart_df["dt"].notna().any():
+            daily = chart_df.groupby("dt").size().reset_index(name="count")
             line = (
                 alt.Chart(daily)
                 .mark_line(point=True)
@@ -372,10 +393,10 @@ def main():
 
         st.subheader("Avg stress score by subreddit")
         if {"subreddit", "score_stress"}.issubset(
-            filtered.columns
-        ) and not filtered.empty:
+            chart_df.columns
+        ) and not chart_df.empty:
             agg = (
-                filtered.dropna(subset=["subreddit"])
+                chart_df.dropna(subset=["subreddit"])
                 .groupby("subreddit")["score_stress"]
                 .mean()
                 .sort_values(ascending=False)
@@ -397,28 +418,27 @@ def main():
                 )
                 st.altair_chart(bar, use_container_width=True)
 
-        st.subheader("Latest posts")
+        st.subheader("Latest posts (all stress levels)")
         cols = ["created_utc", "subreddit", "score_stress", "title", "permalink"]
-        show_cols = [c for c in cols if c in filtered.columns]
+        show_cols = [c for c in cols if c in base_df.columns]
         st.dataframe(
-            filtered[show_cols].reset_index(drop=True),
+            base_df[show_cols].reset_index(drop=True),
             use_container_width=True,
             height=420,
         )
 
     with tabs[1]:
         st.subheader("Heatmap (Posts per day × Subreddit)")
-        heatmap_chart(filtered)
+        heatmap_chart(chart_df)
 
     with tabs[2]:
         st.subheader("Word Cloud (titles)")
-        wordcloud_chart(filtered, max_words=100)
+        wordcloud_chart(chart_df, max_words=100)
 
     with tabs[3]:
         st.subheader("Insights (rule-based summary)")
-        insights_panel(filtered)
+        insights_panel(chart_df)
 
-    # 8) Footer
     st.caption(
         f"Data source: Postgres → table '{table}' on "
         f"{cfg.postgres.host}:{cfg.postgres.port}/{cfg.postgres.database}"
