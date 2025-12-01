@@ -12,34 +12,53 @@ from src.model.infer import get_service
 from src.common.schema import SILVER_COLS, GOLD_COLS, get_gold_schema
 
 
-# Preflight: load model once on driver to fail fast
+# Preflight: load model(s) once on driver to fail fast
 def _preflight_model(cfg: Config) -> None:
-    uri = cfg.model.classification_model
     pos_idx = int(cfg.model.classifier_label_index)
     max_len = int(getattr(cfg.model, "max_len", 256))
 
-    if not uri or not uri.lower().endswith(".zip"):
+    # NEW: support separate VI / EN models, fallback to classification_model if needed
+    uri_vi = (
+        getattr(cfg.model, "classification_model_vi", None)
+        or cfg.model.classification_model
+    )
+    uri_en = getattr(cfg.model, "classification_model_en", None) or uri_vi
+
+    if not uri_vi or not uri_vi.lower().endswith(".zip"):
         raise ValueError(
-            "classification_model must be a .zip path (e.g., s3a://.../distilbert_finetuned.zip)"
+            "classification_model_vi or classification_model must be a .zip path "
+            "(e.g., s3a://.../phobert_finetuned.zip)"
         )
 
-    svc = get_service(clf_model=uri, pos_idx=pos_idx, max_len=max_len, cfg=cfg)
-    _ = svc.classify(["warmup"], batch_size=1)
+    # Warmup VI model
+    svc_vi = get_service(clf_model=uri_vi, pos_idx=pos_idx, max_len=max_len, cfg=cfg)
+    _ = svc_vi.classify(["warmup_vi"], batch_size=1)
     logger.info(
-        f"[GOLD] Model preflight OK: {uri} (pos_idx={pos_idx}, max_len={max_len})"
+        f"[GOLD] VI model preflight OK: {uri_vi} (pos_idx={pos_idx}, max_len={max_len})"
     )
 
+    # Warmup EN model (can be same as VI)
+    if uri_en:
+        svc_en = get_service(
+            clf_model=uri_en, pos_idx=pos_idx, max_len=max_len, cfg=cfg
+        )
+        _ = svc_en.classify(["warmup_en"], batch_size=1)
+        logger.info(
+            f"[GOLD] EN model preflight OK: {uri_en} (pos_idx={pos_idx}, max_len={max_len})"
+        )
 
-# Pandas UDF factory (each executor keeps a cached service)
-def _make_stress_score_udf(cfg: Config):
-    uri = cfg.model.classification_model
+
+# Pandas UDF factory for a *single* model URI
+def _make_stress_score_udf(cfg: Config, model_uri: str):
     pos_idx = int(cfg.model.classifier_label_index)
     batch_size = int(cfg.model.classifier_batch_size)
     max_len = int(getattr(cfg.model, "max_len", 256))
 
     @pandas_udf(T.DoubleType())
     def stress_score_iter(text_iter: Iterator[pd.Series]) -> Iterator[pd.Series]:
-        svc = get_service(clf_model=uri, pos_idx=pos_idx, max_len=max_len, cfg=cfg)
+        svc = get_service(
+            clf_model=model_uri, pos_idx=pos_idx, max_len=max_len, cfg=cfg
+        )
         for s in text_iter:
             texts = s.fillna("").tolist()
             scores = svc.classify(texts, batch_size=batch_size)
@@ -69,19 +88,36 @@ def _transform_to_gold(batch_df: DataFrame, cfg: Config) -> DataFrame:
     model_version = cfg.model.model_version
     cls_threshold = float(cfg.model.classifier_threshold)
 
-    stress_udf = _make_stress_score_udf(cfg)
+    # Decide which model for VI / EN
+    uri_vi = (
+        getattr(cfg.model, "classification_model_vi", None)
+        or cfg.model.classification_model
+    )
+    uri_en = getattr(cfg.model, "classification_model_en", None) or uri_vi
+
+    stress_vi_udf = _make_stress_score_udf(cfg, uri_vi)
+    stress_en_udf = _make_stress_score_udf(cfg, uri_en)
 
     # Select only required columns from Silver
     cols = [c for c in SILVER_COLS if c in batch_df.columns]
     df = batch_df.select(*cols)
 
-    # Build text = title + selftext (trim & normalize whitespace)
-    df = (
-        df.withColumn("title", F.coalesce(F.col("title").cast("string"), F.lit("")))
-        .withColumn("selftext", F.coalesce(F.col("selftext").cast("string"), F.lit("")))
-        .withColumn("text", F.concat_ws(" ", F.col("title"), F.col("selftext")))
-        .withColumn("text", F.regexp_replace(F.col("text"), r"\s+", " "))
-        .withColumn("text", F.trim(F.col("text")))
+    # Build text:
+    # - If Silver đã có 'full_text' thì dùng luôn (đảm bảo thống nhất với offline)
+    # - Nếu không, fallback title + selftext như cũ
+    df = df.withColumn(
+        "title", F.coalesce(F.col("title").cast("string"), F.lit(""))
+    ).withColumn("selftext", F.coalesce(F.col("selftext").cast("string"), F.lit("")))
+
+    if "full_text" in df.columns:
+        df = df.withColumn(
+            "text", F.coalesce(F.col("full_text").cast("string"), F.lit(""))
+        )
+    else:
+        df = df.withColumn("text", F.concat_ws(" ", F.col("title"), F.col("selftext")))
+
+    df = df.withColumn("text", F.regexp_replace(F.col("text"), r"\s+", " ")).withColumn(
+        "text", F.trim(F.col("text"))
     )
 
     # Compute interaction_rate
@@ -97,8 +133,35 @@ def _transform_to_gold(batch_df: DataFrame, cfg: Config) -> DataFrame:
         "interaction_rate", ((up + F.lit(0.5) * nc) / age_hours).cast("double")
     )
 
-    # Score & threshold
-    df = df.withColumn("score_stress", stress_udf(F.col("text")).cast("double"))
+    # ---------- NEW: score theo lang_bucket ----------
+    # Giả định Silver đã có cột 'lang_bucket' ∈ {'vi', 'en'}
+    # Nếu thiếu, fallback: coi tất cả là 'vi'
+    if "lang_bucket" not in df.columns:
+        df = df.withColumn("lang_bucket", F.lit("vi"))
+
+    df_vi = df.filter(F.col("lang_bucket") == "vi")
+    df_en = df.filter(F.col("lang_bucket") == "en")
+
+    if not df_vi.rdd.isEmpty():
+        df_vi = df_vi.withColumn(
+            "score_stress", stress_vi_udf(F.col("text")).cast("double")
+        )
+    if not df_en.rdd.isEmpty():
+        df_en = df_en.withColumn(
+            "score_stress", stress_en_udf(F.col("text")).cast("double")
+        )
+
+    # Hợp nhất lại (nếu 1 trong 2 rỗng thì unionByName vẫn OK)
+    if df_vi.rdd.isEmpty():
+        df_scored = df_en
+    elif df_en.rdd.isEmpty():
+        df_scored = df_vi
+    else:
+        df_scored = df_vi.unionByName(df_en)
+
+    df = df_scored
+
+    # Threshold → label_stress
     df = df.withColumn(
         "label_stress",
         F.when(F.col("score_stress") >= F.lit(cls_threshold), F.lit(1)).otherwise(
@@ -108,7 +171,12 @@ def _transform_to_gold(batch_df: DataFrame, cfg: Config) -> DataFrame:
 
     # Metadata & time normalization
     df = df.withColumn("feature_version", F.lit(feature_version))
-    df = df.withColumn("model_version", F.lit(model_version))
+    df = df.withColumn(
+        "model_version",
+        F.when(F.col("lang_bucket") == F.lit("vi"), F.lit("phobert-finetuned-v1"))
+        .when(F.col("lang_bucket") == F.lit("en"), F.lit("distilbert-finetuned-v1"))
+        .otherwise(F.lit("unknown")),
+    )
     df = df.withColumn(
         "created_utc",
         F.coalesce(
@@ -167,7 +235,7 @@ def stream_gold(spark: SparkSession, cfg: Config) -> None:
     # Enable Arrow for pandas UDF
     spark.conf.set("spark.sql.execution.arrow.pyspark.enabled", "true")
 
-    # Fail fast on model
+    # Fail fast on model(s)
     _preflight_model(cfg)
 
     # Paths

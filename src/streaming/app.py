@@ -2,9 +2,9 @@ from pyspark.sql import SparkSession
 from src.common.config import load_config
 from src.common.logging_utils import get_logger
 
-from stream_bronze import stream_bronze
-from stream_silver import stream_silver
-from stream_gold import stream_gold
+from src.streaming.stream_bronze import stream_bronze
+from src.streaming.stream_silver import stream_silver
+from src.streaming.stream_gold import stream_gold
 
 log = get_logger(__name__)
 

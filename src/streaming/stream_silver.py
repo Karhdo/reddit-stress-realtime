@@ -1,11 +1,75 @@
 from __future__ import annotations
 
+import re
+import unicodedata
+
+import langid
 from delta.tables import DeltaTable
 from loguru import logger
 from pyspark.sql import DataFrame, SparkSession, functions as F, Window
+from pyspark.sql.types import DoubleType, StringType
 
 from src.common.config import Config
 from src.common.schema import SILVER_COLS, get_silver_schema
+
+
+# ---------- Language helpers (VI vs EN) ----------
+
+
+def _vietnamese_ratio(text: str) -> float:
+    """
+    Ratio of Vietnamese-diacritic words over all words (0..1).
+    Used for rough VI/EN routing.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return 0.0
+
+    t = unicodedata.normalize("NFC", text)
+    tokens = re.findall(r"[A-Za-zÀ-ỹ]+", t)
+    if not tokens:
+        return 0.0
+
+    # Any token containing a Vietnamese diacritic counts as "Vietnamese"
+    vi_re = re.compile(
+        r"[àáảãạâầấẩẫậăằắẳẵặ"
+        r"èéẻẽẹêềếểễệ"
+        r"ìíỉĩị"
+        r"òóỏõọôồốổỗộơờớởỡợ"
+        r"ùúủũụưừứửữự"
+        r"ỳýỷỹỵ"
+        r"đ]"
+    )
+    vi_tokens = sum(1 for tok in tokens if vi_re.search(tok))
+    return vi_tokens / len(tokens)
+
+
+def _lang_bucket(text: str) -> str:
+    """
+    Hard-route into exactly two buckets:
+      - 'vi' if text looks Vietnamese
+      - 'en' otherwise
+
+    Heuristic:
+      1) If vietnamese_ratio >= 0.3 → 'vi'
+      2) Else use langid: if 'vi' → 'vi', else → 'en'
+    """
+    if not isinstance(text, str) or not text.strip():
+        return "en"
+
+    t = text.strip()
+    # Step 1: vi_ratio
+    if _vietnamese_ratio(t) >= 0.3:
+        return "vi"
+
+    # Step 2: langid fallback
+    lang, _ = langid.classify(t)
+    if lang == "vi":
+        return "vi"
+    return "en"
+
+
+vi_ratio_udf = F.udf(_vietnamese_ratio, DoubleType())
+lang_bucket_udf = F.udf(_lang_bucket, StringType())
 
 
 def _ensure_silver_table(spark: SparkSession, silver_path: str) -> None:
@@ -45,6 +109,20 @@ def _project_and_clean(df: DataFrame) -> DataFrame:
     df = df.withColumn("created_utc", F.col("created_utc").cast("timestamp"))
     if "dt" not in df.columns:
         df = df.withColumn("dt", F.to_date(F.col("event_time")))
+
+    # ---------- NEW: full_text + vi_ratio + lang_bucket ----------
+    # Combine title + selftext for language routing
+    df = df.withColumn(
+        "full_text",
+        F.concat_ws("\n\n", F.col("title"), F.col("selftext")),
+    )
+
+    # Word-level Vietnamese ratio
+    df = df.withColumn("vi_ratio", vi_ratio_udf(F.col("full_text")))
+
+    # Hard bucket: 'vi' or 'en'
+    df = df.withColumn("lang_bucket", lang_bucket_udf(F.col("full_text")))
+
     return df
 
 

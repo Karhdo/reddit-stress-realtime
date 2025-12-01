@@ -65,7 +65,7 @@ BRONZE_COLS: List[str] = [
     "ingest_ts",
 ]
 
-SILVER_COLS: List[str] = BRONZE_COLS + ["created_utc", "dt"]
+SILVER_COLS: List[str] = BRONZE_COLS + ["created_utc", "dt", "vi_ratio", "lang_bucket"]
 
 GOLD_COLS: List[str] = [
     "post_id",
@@ -100,6 +100,8 @@ def get_silver_schema() -> StructType:
             StructField("event_time", TimestampType(), True),
             StructField("dt", DateType(), True),
             StructField("ingest_ts", TimestampType(), True),
+            StructField("vi_ratio", DoubleType(), True),
+            StructField("lang_bucket", StringType(), True),
         ]
     )
 
