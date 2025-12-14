@@ -48,15 +48,14 @@ reddit:
   user_agent: '${REDDIT_USER_AGENT:-stress-stream/0.1}'
   subreddits: ['Professors', 'PhD', 'GradSchool', 'csMajors', 'EngineeringStudents']
   query: ''
-  search_limit: ${REDDIT_SEARCH_LIMIT:-25}
-  poll_interval: ${REDDIT_POLL_INTERVAL:-600000} # 10 minutes
+  search_limit: ${REDDIT_SEARCH_LIMIT:-100}
+  poll_interval: ${REDDIT_POLL_INTERVAL:-30} # 30 seconds
 
 model:
-  # 6) Chỉ dùng DistilBERT đã zip; cho phép override qua .env MODEL_URI
   classification_model: '${MODEL_URI:-s3a://artifacts/models/20251104T073104Z/distilbert_finetuned.zip}'
   classifier_label_index: ${CLASSIFIER_POS_IDX:-1}
   classifier_batch_size: ${CLASSIFIER_BATCH_SIZE:-16}
-  classifier_threshold: ${CLASSIFIER_THRESHOLD:-0.5}
+  classifier_threshold: ${CLASSIFIER_THRESHOLD:-0.6}
   model_version: '${MODEL_VERSION:-distilbert-finetuned-v1}'
 
 postgres:

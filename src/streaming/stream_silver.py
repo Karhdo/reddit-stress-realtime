@@ -120,7 +120,7 @@ def stream_silver(spark: SparkSession, cfg: Config) -> None:
         bronze_stream.writeStream.queryName("silver-upsert")
         .foreachBatch(lambda df, bid: _process_batch(df, bid, cfg))
         .option("checkpointLocation", checkpoint_path)
-        .trigger(processingTime="30 seconds")
+        .trigger(processingTime="10 seconds")
         .start()
     )
 

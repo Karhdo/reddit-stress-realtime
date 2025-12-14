@@ -192,7 +192,7 @@ def stream_gold(spark: SparkSession, cfg: Config) -> None:
         silver_stream.writeStream.queryName("gold-stress-classifier")
         .foreachBatch(lambda df, bid: _to_gold(df, bid, cfg))
         .option("checkpointLocation", checkpoint_path)
-        .trigger(processingTime="30 seconds")
+        .trigger(processingTime="10 seconds")
         .start()
     )
 

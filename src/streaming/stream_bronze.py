@@ -15,8 +15,8 @@ def stream_bronze(spark: SparkSession, cfg: Config) -> None:
         .option("kafka.bootstrap.servers", cfg.kafka.bootstrap_servers)
         .option("subscribe", cfg.kafka.topic_posts)
         .option(
-            "startingOffsets", cfg.kafka.starting_offsets
-        )  # e.g., "latest" | "earliest"
+            "latest", cfg.kafka.starting_offsets
+        )  # e.g., "latest" | "earliest" | "startingOffsets"
         .option("failOnDataLoss", "false")
         .option("maxOffsetsPerTrigger", 50)
         .load()
@@ -41,7 +41,7 @@ def stream_bronze(spark: SparkSession, cfg: Config) -> None:
         .option("checkpointLocation", checkpoint_path)
         .option("mergeSchema", "true")
         .outputMode("append")
-        .trigger(processingTime="30 seconds")
+        .trigger(processingTime="10 seconds")
         .start(bronze_path)
     )
 

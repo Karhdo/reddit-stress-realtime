@@ -42,8 +42,17 @@ def make_producer(bootstrap_servers: str) -> KafkaProducer:
 
 # Simple iterator over subreddit search results
 def _iter_posts(reddit: praw.Reddit, subreddits: Iterable[str], query: str, limit: int):
+    query = (query or "").strip()
+
     for sub in subreddits:
-        for post in reddit.subreddit(sub).search(query, sort="new", limit=limit):
+        sr = reddit.subreddit(sub)
+
+        if query:
+            generator = sr.search(query, sort="new", limit=limit)
+        else:
+            generator = sr.new(limit=limit)
+
+        for post in generator:
             yield post
 
 
@@ -69,7 +78,7 @@ def run() -> None:
 
     # 4. Read runtime params
     subreddits = list(rcfg.subreddits or ["stress", "depression"])
-    query = rcfg.query or "stress"
+    query = rcfg.query or ""
     poll_interval = int(getattr(rcfg, "poll_interval", 5))
     search_limit = int(getattr(rcfg, "search_limit", 25))
 
