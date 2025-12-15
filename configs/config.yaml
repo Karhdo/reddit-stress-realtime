@@ -46,9 +46,9 @@ reddit:
   client_id: '${REDDIT_CLIENT_ID}'
   client_secret: '${REDDIT_CLIENT_SECRET}'
   user_agent: '${REDDIT_USER_AGENT:-stress-stream/0.1}'
-  subreddits: ['Professors', 'PhD', 'GradSchool', 'csMajors', 'EngineeringStudents']
+  subreddits: ['ptsd', 'assistance', 'relationships', 'domesticviolence', 'anxiety', 'homeless', 'stress', 'almosthomeless', 'food_pantry']
   query: ''
-  search_limit: ${REDDIT_SEARCH_LIMIT:-100}
+  search_limit: ${REDDIT_SEARCH_LIMIT:-50}
   poll_interval: ${REDDIT_POLL_INTERVAL:-30} # 30 seconds
 
 model:
